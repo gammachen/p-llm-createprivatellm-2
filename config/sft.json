@@ -1,0 +1,4 @@
+{
+  "model_path":"./model/p-llm-createprivatellm-2",
+  "output_dir": "./model/p-llm-createprivatellm-2-instruct"
+}

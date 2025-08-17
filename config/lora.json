@@ -1,0 +1,5 @@
+{
+  "max_len": 512,
+  "model_path":"./model/p-llm-createprivatellm-2-chat",
+  "output_dir": "./model/p-llm-createprivatellm-2-chat-lora"
+}
