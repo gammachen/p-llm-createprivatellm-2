@@ -11,6 +11,47 @@
 
 通过 GPT-2 模型训练这一具体案例，构建和训练出属于自己的因果语言模型。
 
+## 训练流程
+
+```mermaid
+graph TD
+    A[开始] --> B[预训练阶段]
+    B --> C[监督微调阶段]
+    C --> D[LoRA微调阶段]
+    C --> E[DPO训练阶段]
+    D --> F[模型部署]
+    E --> F
+    F --> G[结束]
+    
+    subgraph 预训练阶段
+        B1[加载Wiki40B数据集]
+        B2[使用BERT分词器处理文本]
+        B3[训练GPT-2模型]
+        B1 --> B2 --> B3
+    end
+    
+    subgraph SFT阶段
+        C1[加载Zhihu-KOL数据集]
+        C2[格式化指令数据]
+        C3[全参数微调训练]
+        C1 --> C2 --> C3
+    end
+    
+    subgraph LoRA阶段
+        D1[加载RLHF数据集]
+        D2[应用LoRA适配器]
+        D3[低秩参数微调]
+        D1 --> D2 --> D3
+    end
+    
+    subgraph DPO阶段
+        E1[加载RLHF数据集]
+        E2[构建偏好数据对]
+        E3[直接偏好优化训练]
+        E1 --> E2 --> E3
+    end
+```
+
 https://huggingface.co/openai-community/gpt2
 
 ## 目录结构
@@ -30,22 +71,140 @@ https://huggingface.co/openai-community/gpt2
 └── README.md           # 项目说明文档
 ```
 
-## 特性
+## 关键代码示例
 
-- **预训练模块**  
-  实现基于 GPT-2 架构的无监督预训练，帮助模型学习语言结构和语义信息。
+### 1. 预训练 (pretrain.py)
 
-- **SFT 训练模块**  
-  提供有监督微调方案，使模型在特定任务或领域上获得更优表现。
+```python
+# 创建分词器
+def create_tokenizer(config):
+    tokenizer = BertTokenizerFast.from_pretrained(config["tokenizer_name"])
+    tokenizer.bos_token = tokenizer.cls_token
+    tokenizer.eos_token = tokenizer.sep_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+# 创建模型
+def create_model(tokenizer, config):
+    model_name = config["model_name"]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_config = GPT2Config.from_pretrained(
+        model_name,
+        vocab_size=tokenizer.vocab_size,
+        n_positions=config["max_len"],
+        n_ctx=config["max_len"],
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id
+    )
+    model = GPT2LMHeadModel(model_config)
+    model.resize_token_embeddings(len(tokenizer))
+    model.to(device)
+    return model
+```
+
+### 2. 监督微调 (sft.py)
+
+```python
+# 格式化提示词
+def formatting_prompt(sample):
+    instruction = sample["INSTRUCTION"]
+    input_text = sample.get("INPUT", "")
+    response = sample["RESPONSE"]
+    prompt = f"### Instruction:\n{instruction}\n### Input:\n{input_text}\n### Response:\n{response}\n"
+    return prompt
+
+# 使用TRL的SFTTrainer进行训练
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    data_collator=data_collator,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["test"],
+    formatting_func=formatting_prompt,
+)
+```
 
 - **DPO 训练模块**  
   采用直接偏好优化的方法，将用户或专家偏好融入模型训练流程，从而进一步提升模型响应的质量与人性化。
 
-- **LoRA 训练模块**  
-  采用低秩适配技术，在不改变模型主体参数的前提下，仅对少量参数进行更新，大幅降低资源消耗与训练成本，同时兼顾模型性能与适应性。
+### 3. LoRA 训练 (lora.py)
 
-- **本地运行与调试**  
-  项目支持在本地环境下完整地运行和调试，方便学习和研究人员深入理解每个训练阶段的细节。
+```python
+# 配置LoRA适配器
+def create_model(config):
+    model = AutoModelForCausalLM.from_pretrained(config["model_path"])
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.1,
+        target_modules=["lm_head"]
+    )
+    model.add_adapter(lora_config, "clm_lora")
+    return model
+
+# 使用PEFT进行低秩适配训练
+```
+
+### 4. DPO 训练 (dpo.py)
+
+```python
+# 格式化偏好数据
+def formatting(sample):
+    prompt = f"### Instruction:\n{sample['prompt']}### Input:\n\n### Response:\n"
+    chosen = f"{sample['chosen']}\n"
+    rejected = f"{sample['rejected']}\n"
+    return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
+
+# 使用TRL的DPOTrainer进行训练
+trainer = DPOTrainer(
+    model=model,
+    ref_model=ref_model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["test"],
+    processing_class=tokenizer
+)
+```
+
+## 配置文件示例
+
+### 预训练配置 (config/pretrain.json)
+```json
+{
+  "max_len": 512,
+  "model_name": "gpt2",
+  "tokenizer_name": "bert-base-chinese",
+  "model_path":"./models"
+}
+```
+
+### SFT配置 (config/sft.json)
+```json
+{
+  "model_path":"./model/p-llm-createprivatellm-2",
+  "output_dir": "./model/p-llm-createprivatellm-2-instruct"
+}
+```
+
+### LoRA配置 (config/lora.json)
+```json
+{
+  "max_len": 512,
+  "model_path":"./model/p-llm-createprivatellm-2-chat",
+  "output_dir": "./model/p-llm-createprivatellm-2-chat-lora"
+}
+```
+
+### DPO配置 (config/dpo.json)
+```json
+{
+  "model_path":"./model/p-llm-createprivatellm-2-instruct",
+  "output_dir": "./model/p-llm-createprivatellm-2-chat"
+}
+```
 
 ## 环境要求与依赖
 
